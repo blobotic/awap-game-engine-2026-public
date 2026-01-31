@@ -22,6 +22,9 @@ class IngredientStatus(Enum):
     FINISHED = 2
     BOUGHT = 3
     CHOPPED = 4
+    COOKING = 5
+    COOKED = 6
+    PLATED = 7
 
 class Ingredient:
     def __init__(self, name, order, index):
@@ -136,8 +139,8 @@ class Bot:
 
             if arrived:
                 # start chopping 
-                if controller.chop(self.id, dest[0], dest[1]):
-                    self.task.ingredient.status = IngredientStatus.CHOPPED
+                if controller.start_cook(self.id, dest[0], dest[1]):
+                    self.task.ingredient.status = IngredientStatus.COOKING
                     # TODO: unclaim loc
                 
         else:
@@ -296,6 +299,27 @@ class BotPlayer:
                     else:
                         # the order has no assigned plate yet
                         task_list.append((priority, Task(Tasks.ACQUIRE_PLATE), ingredient, self.plates))
+            elif ingredient.status == IngredientStatus.CHOPPED:
+                if ingredient.cookable:
+                    task_list.append((priority, Task(Tasks.COOK, ingredient, self.cookers)))
+                else:
+                    # put it on a plate
+                    if ingredient.order.plate != None:
+                        task_list.append((priority, Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)))
+                    else:
+                        # the order has no assigned plate yet
+                        task_list.append((priority, Task(Tasks.ACQUIRE_PLATE), ingredient, self.plates))
+            elif ingredient.status == IngredientStatus.COOKING:
+                # if controller.item_to_public_dict(ingredient.item)["cooked_stage"] == 1:
+                # check if by the time you walk there it will be cooked
+                    continue
+            elif ingredient.status == IngredientStatus.COOKED:
+                # put it on a plate
+                if ingredient.order.plate != None:
+                    task_list.append((priority, Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)))
+                else:
+                    # the order has no assigned plate yet
+                    task_list.append((priority, Task(Tasks.ACQUIRE_PLATE), ingredient, self.plates))
             # etc
 
         return task_list
@@ -304,7 +328,7 @@ class BotPlayer:
         # todo: make this functional
         # naive algorithm: just assign in order
         # future: 
-        # goto tasks -> search for the closest one
+        # goto tasks -> distance changes priority so search for a close one
         for i, (priority, task) in enumerate(task_list):
             if priority > 0:
                 bot.task = task
