@@ -5,30 +5,53 @@ from typing import Tuple, Optional, List
 from game_constants import Team, TileType, FoodType, ShopCosts
 from robot_controller import RobotController
 from item import Pan, Plate, Food
+from enum import Enum
 
 
-ingredient_data = {"Egg": {"id": 0, "choppable": False, "cookable": True, "cost": 20},
-                   "Onion": {"id": 1, "choppable": True, "cookable": False, "cost": 30},
-                   "Meat": {"id": 2, "choppable": True, "cookable": True, "cost": 80},
-                   "Noodles": {"id": 3, "choppable": False, "cookable": False, "cost": 40},
-                   "Sauce": {"id": 4, "choppable": False, "cookable": False, "cost": 10}}
+ingredient_data = {"EGG": {"id": 0, "choppable": False, "cookable": True, "cost": 20},
+                   "ONION": {"id": 1, "choppable": True, "cookable": False, "cost": 30},
+                   "MEAT": {"id": 2, "choppable": True, "cookable": True, "cost": 80},
+                   "NOODLES": {"id": 3, "choppable": False, "cookable": False, "cost": 40},
+                   "SAUCE": {"id": 4, "choppable": False, "cookable": False, "cost": 10}}
+
+class IngredientStatus(Enum):
+    UNFINISHED = 1
+    FINISHED = 2
 
 class Ingredient:
-    def __init__(self, name):
+    def __init__(self, name, order, index):
         self.name = name 
+        self.index = index
         self.id = ingredient_data[name]["id"]
         self.choppable = ingredient_data[name]["choppable"]
         self.cookable = ingredient_data[name]["cookable"]
         self.cost = ingredient_data[name]["cost"]
+        
+        self.status = IngredientStatus.UNFINISHED
+        self.order = order
+
+    def __eq__(self, other):
+        if not isinstance(other, Ingredient):
+            return NotImplemented
+        return self.order.id == other.order.id
+
+    def __lt__(self, other):
+        if not isinstance(other, Ingredient):
+            return NotImplemented
+        return self.order.id < other.order.id
 
 class Order:
     def __init__(self, order):
-        self.id = order.order_id 
-        self.finished = []
-        self.unfinished = []
+        print("order is", order)
+        self.id = order["order_id"] 
+        self.ings = []
 
-        for ing in order.required:
-            self.unfinished.append(Ingredient(ing))
+        i = 0
+        for ing in order["required"]:
+            self.ings.append(Ingredient(ing, self, i))
+            i += 1
+
+        self.active = False
 
 
 class BotPlayer:
@@ -113,7 +136,9 @@ class BotPlayer:
                 continue
         
             oid = order["order_id"]
-            if oid in self.orders:
+            if oid not in self.orders:
+                self.orders[oid] = Order(order)
+            elif self.orders[oid].active:
                 # we care more about orders that we already started
                 priority += 10
 
@@ -125,11 +150,14 @@ class BotPlayer:
             # TODO: calculate if it's possible to complete in the remaining turns
             # for now, we will just prioritize by how many turns are left
             turn = controller.get_turn()
-            remaining_turns = controller.expires_turn() - turn
+            remaining_turns = order["expires_turn"] - turn
             priority += 1000 / remaining_turns
 
-            
+            for ing in self.orders[oid].ings:
+                if ing.status == IngredientStatus.UNFINISHED:
+                    ingredients.append((priority, ing))
 
+        ingredients.sort()
         return ingredients
 
     def play_turn(self, controller: RobotController):
@@ -137,7 +165,9 @@ class BotPlayer:
         if not my_bots: return
 
         # based on orders, get ingredients in order of priority of what needs to be done
-        ingredient = self.prioritize_ingredients(controller)
+        ingredient_list = self.prioritize_ingredients(controller)
+
+        print(f"ingredient list is {ingredient_list}")
         
         # assign idle bots to do ingredients / tasks
 
