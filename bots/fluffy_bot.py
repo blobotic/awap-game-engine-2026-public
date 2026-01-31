@@ -158,7 +158,15 @@ class Bot:
                     self.task.ingredient.status = IngredientStatus.COOKING
                     self.task = None
                     # TODO: unclaim loc
-                
+        elif self.task.task == Tasks.ACQUIRE_PLATE:
+            return 
+        elif self.task.task == Tasks.GOTO_PLATE:
+            dest = self.task.metadata
+            arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+
+            if arrived:
+                # place on plate
+
         else:
             print("self.task.task is ", self.task.task)
             raise(NotImplemented)
@@ -356,7 +364,8 @@ class BotPlayer:
         return cost
     
 
-    # orders are [{'order_id': 1, 'required': ['NOODLES', 'MEAT'], 'created_turn': 0, 'expires_turn': 200, 'reward': 10000, 'penalty': 3, 'claimed_by': None, 'completed_turn': None, 'is_active': True}]
+    # orders are in the format of: [{'order_id': 1, 'required': ['NOODLES', 'MEAT'], 'created_turn': 0, 'expires_turn': 200, 'reward': 10000, 'penalty': 3, 'claimed_by': None, 'completed_turn': None, 'is_active': True}]
+    # takes all the ingredients by all orders and prioritize them and return the list of the ingredients
     def prioritize_ingredients(self, controller):
         orders = controller.get_orders(controller.get_team())
 
@@ -394,6 +403,7 @@ class BotPlayer:
         ingredients.sort()
         return ingredients
     
+    # generate the task list by the priority given from prioritize_ingredients
     def generate_tasks(self, controller, ingredient_list):
         task_list = []
 
