@@ -164,6 +164,7 @@ class Game:
             except BaseException as e:
                 ok = False
                 exc = e
+                traceback.print_exc()
 
         t0 = time.time()
         th = Thread(target=runner, daemon=True) #run in a separate thread
