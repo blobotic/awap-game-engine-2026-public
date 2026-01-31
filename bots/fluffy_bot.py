@@ -42,7 +42,6 @@ class Ingredient:
 
 class Order:
     def __init__(self, order):
-        print("order is", order)
         self.id = order["order_id"] 
         self.ings = []
 
@@ -52,6 +51,15 @@ class Order:
             i += 1
 
         self.active = False
+
+class Bot:
+    def __init__(self, bot_id):
+        self.id = bot_id 
+        self.task = None
+
+
+    def work(self):
+        print("not implemented: bot should start laboring")
 
 
 class BotPlayer:
@@ -64,6 +72,7 @@ class BotPlayer:
         self.state = 0
 
         self.orders = {}
+        self.bots = {}
 
     def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate) -> Optional[Tuple[int, int]]:
         queue = deque([(start, [])]) 
@@ -153,6 +162,8 @@ class BotPlayer:
             remaining_turns = order["expires_turn"] - turn
             priority += 1000 / remaining_turns
 
+            # todo: modify priority by distance to bots
+
             for ing in self.orders[oid].ings:
                 if ing.status == IngredientStatus.UNFINISHED:
                     ingredients.append((priority, ing))
@@ -160,18 +171,33 @@ class BotPlayer:
         ingredients.sort()
         return ingredients
 
+    def assign_bot(self, bot, task_list):
+        # todo: make this functional
+        bot.task = task_list[0]
+
     def play_turn(self, controller: RobotController):
         my_bots = controller.get_team_bot_ids()
         if not my_bots: return
 
-        # based on orders, get ingredients in order of priority of what needs to be done
-        ingredient_list = self.prioritize_ingredients(controller)
+        # update bots
+        for bot_id in my_bots:
+            if bot_id not in self.bots:
+                self.bots[bot_id] = Bot(bot_id)
 
-        print(f"ingredient list is {ingredient_list}")
+        # based on orders, get ingredients in order of priority of what needs to be done
+        task_list = self.prioritize_ingredients(controller)
+
+        print(f"task list is {task_list}")
         
         # assign idle bots to do ingredients / tasks
+        for bot in self.bots:
+            if bot.task is None:
+                self.assign_bot(bot, task_list)
+
 
         # all bots do what they're assigned to do
+        for bot in self.bots:
+            bot.work()
 
 
     
