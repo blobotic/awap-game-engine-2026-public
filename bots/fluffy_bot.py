@@ -128,8 +128,6 @@ class Bot:
     def select_chopping_counter(self):
         pass
 
-    def
-
     def work(self, controller : RobotController):
         bot_state = controller.get_bot_state(self.id)
         bot_loc = (bot_state["x"], bot_state["y"])
@@ -176,7 +174,9 @@ class Bot:
             arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
 
             if arrived:
-                # place on plate
+                # place on plate 
+                controller.add_food_to_plate(self.id, dest[0], dest[1])
+                self.task.ingredient.status = IngredientStatus.PLATED
 
         else:
             print("self.task.task is ", self.task.task)
