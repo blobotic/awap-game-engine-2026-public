@@ -7,6 +7,9 @@ from robot_controller import RobotController
 from item import Pan, Plate, Food
 from enum import Enum
 
+# ===============================================
+# Ingredients
+# ===============================================
 
 ingredient_data = {"EGG": {"id": 0, "choppable": False, "cookable": True, "cost": 20},
                    "ONION": {"id": 1, "choppable": True, "cookable": False, "cost": 30},
@@ -40,6 +43,11 @@ class Ingredient:
             return NotImplemented
         return self.order.id < other.order.id
 
+
+# ===============================================
+# Order
+# ===============================================
+
 class Order:
     def __init__(self, order):
         self.id = order["order_id"] 
@@ -52,6 +60,13 @@ class Order:
 
         self.active = False
 
+
+
+
+
+# ===============================================
+# Bot
+# ===============================================
 class Bot:
     def __init__(self, bot_id):
         self.id = bot_id 
@@ -61,6 +76,13 @@ class Bot:
     def work(self):
         print("not implemented: bot should start laboring")
 
+
+
+
+
+# ===============================================
+# Bot Player
+# ===============================================
 
 class BotPlayer:
     def __init__(self, map_copy):
@@ -91,7 +113,7 @@ class BotPlayer:
                     if dx == 0 and dy == 0: continue
                     nx, ny = curr_x + dx, curr_y + dy
                     if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
-                        if controller.get_map().is_tile_walkable(nx, ny):
+                        if controller.get_map(controller.get_team()).is_tile_walkable(nx, ny):
                             visited.add((nx, ny))
                             queue.append(((nx, ny), path + [(dx, dy)]))
         return None
@@ -111,7 +133,7 @@ class BotPlayer:
     def find_nearest_tile(self, controller: RobotController, bot_x: int, bot_y: int, tile_name: str) -> Optional[Tuple[int, int]]:
         best_dist = 9999
         best_pos = None
-        m = controller.get_map()
+        m = controller.get_map(controller.get_team())
         for x in range(m.width):
             for y in range(m.height):
                 tile = m.tiles[x][y]
@@ -135,7 +157,7 @@ class BotPlayer:
 
     # orders are [{'order_id': 1, 'required': ['NOODLES', 'MEAT'], 'created_turn': 0, 'expires_turn': 200, 'reward': 10000, 'penalty': 3, 'claimed_by': None, 'completed_turn': None, 'is_active': True}]
     def prioritize_ingredients(self, controller):
-        orders = controller.get_orders()
+        orders = controller.get_orders(controller.get_team())
 
         ingredients = []
 
@@ -176,7 +198,7 @@ class BotPlayer:
         bot.task = task_list[0]
 
     def play_turn(self, controller: RobotController):
-        my_bots = controller.get_team_bot_ids()
+        my_bots = controller.get_team_bot_ids(controller.get_team())
         if not my_bots: return
 
         # update bots
@@ -190,15 +212,14 @@ class BotPlayer:
         print(f"task list is {task_list}")
         
         # assign idle bots to do ingredients / tasks
-        for bot in self.bots:
+        print("self.bots is", self.bots)
+        for bot_id in self.bots:
+            bot = self.bots[bot_id]
             if bot.task is None:
                 self.assign_bot(bot, task_list)
 
-
-        # all bots do what they're assigned to do
-        for bot in self.bots:
+            # all bots do what they're assigned to do
             bot.work()
-
 
     
         self.my_bot_id = my_bots[0]
@@ -240,7 +261,7 @@ class BotPlayer:
                 if not shop_pos: return
                 sx, sy = shop_pos
                 if self.move_towards(controller, bot_id, sx, sy):
-                    if controller.get_team_money() >= ShopCosts.PAN.buy_cost:
+                    if controller.get_team_money(team=controller.get_team()) >= ShopCosts.PAN.buy_cost:
                         controller.buy(bot_id, ShopCosts.PAN, sx, sy)
 
         #state 2: buy meat
@@ -248,7 +269,7 @@ class BotPlayer:
             shop_pos = self.find_nearest_tile(controller, bx, by, "SHOP")
             sx, sy = shop_pos
             if self.move_towards(controller, bot_id, sx, sy):
-                if controller.get_team_money() >= FoodType.MEAT.buy_cost:
+                if controller.get_team_money(team=controller.get_team()) >= FoodType.MEAT.buy_cost:
                     if controller.buy(bot_id, FoodType.MEAT, sx, sy):
                         self.state = 3
 
@@ -286,7 +307,7 @@ class BotPlayer:
             shop_pos = self.find_nearest_tile(controller, bx, by, "SHOP")
             sx, sy = shop_pos
             if self.move_towards(controller, bot_id, sx, sy):
-                if controller.get_team_money() >= ShopCosts.PLATE.buy_cost:
+                if controller.get_team_money(team=controller.get_team()) >= ShopCosts.PLATE.buy_cost:
                     if controller.buy(bot_id, ShopCosts.PLATE, sx, sy):
                         self.state = 9
 
@@ -301,7 +322,7 @@ class BotPlayer:
             shop_pos = self.find_nearest_tile(controller, bx, by, "SHOP")
             sx, sy = shop_pos
             if self.move_towards(controller, bot_id, sx, sy):
-                if controller.get_team_money() >= FoodType.NOODLES.buy_cost:
+                if controller.get_team_money(team=controller.get_team()) >= FoodType.NOODLES.buy_cost:
                     if controller.buy(bot_id, FoodType.NOODLES, sx, sy):
                         self.state = 11
 
@@ -371,6 +392,6 @@ class BotPlayer:
             dx = random.choice([-1, 1])
             dy = random.choice([-1, 1])
             nx,ny = bx + dx, by + dy
-            if controller.get_map().is_tile_walkable(nx, ny):
+            if controller.get_map(controller.get_team()).is_tile_walkable(nx, ny):
                 controller.move(bot_id, dx, dy)
                 return
