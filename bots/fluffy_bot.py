@@ -21,7 +21,7 @@ class IngredientStatus(Enum):
     NOT_STARTED = 1
     FINISHED = 2
     BOUGHT = 3
-    AT_SHOP = 4
+    CHOPPED = 4
 
 class Ingredient:
     def __init__(self, name, order, index):
@@ -70,8 +70,8 @@ class Order:
 
 class Tasks(Enum):
     BUY_INGREDIENT = 1
-    GOTO_COUNTER = 3
-    GOTO_COOKER = 4
+    CHOP = 2
+    COOK = 3
     GOTO_PLATE = 5
     ACQUIRE_PLATE = 6
 
@@ -82,6 +82,11 @@ class Task:
         self.metadata = metadata 
 
     def get_closest_loc(self, bot_loc):
+        # TODO: implement
+        return self.metadata[0]
+    
+    def get_closest_loc(self, bot_loc):
+        # TODO: implement
         return self.metadata[0]
 
 
@@ -112,8 +117,28 @@ class Bot:
 
             if arrived and controller.get_team_money(team=controller.get_team()) >= self.task.ingredient.cost:
                 # only buy if we have money
-                controller.buy(self.id, self.task.metadata, dest[0], dest[1])
+                if controller.buy(self.id, self.task.metadata, dest[0], dest[1]):
+                    self.task.ingredient.status = IngredientStatus.BOUGHT
+        elif self.task.task == Tasks.CHOP:
+            dest = self.task.get_closest_unclaimed_loc(bot_loc)
+            # TODO: claim loc
+            arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
 
+            if arrived:
+                # start chopping 
+                if controller.chop(self.id, dest[0], dest[1]):
+                    self.task.ingredient.status = IngredientStatus.CHOPPED
+                    # TODO: unclaim loc
+        elif self.task.task == Tasks.COOK:
+            dest = self.task.get_closest_unclaimed_loc(bot_loc)
+            # TODO: claim loc
+            arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+
+            if arrived:
+                # start chopping 
+                if controller.chop(self.id, dest[0], dest[1]):
+                    self.task.ingredient.status = IngredientStatus.CHOPPED
+                    # TODO: unclaim loc
                 
         else:
             raise(NotImplemented)
@@ -261,9 +286,9 @@ class BotPlayer:
             elif ingredient.status == IngredientStatus.BOUGHT:
                 # case on the ingredient
                 if ingredient.choppable:
-                    task_list.append((priority, Task(Tasks.GOTO_COUNTER, ingredient, self.counters)))
+                    task_list.append((priority, Task(Tasks.CHOP, ingredient, self.counters)))
                 elif ingredient.cookable: 
-                    task_list.append((priority, Task(Tasks.GOTO_COOKER, ingredient, self.cookers)))
+                    task_list.append((priority, Task(Tasks.COOK, ingredient, self.cookers)))
                 else:
                     # put it on a plate
                     if ingredient.order.plate != None:
