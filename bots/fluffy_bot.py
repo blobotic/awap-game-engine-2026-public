@@ -28,6 +28,8 @@ class IngredientStatus(Enum):
     COOKING = 5
     COOKED = 6
     PLATED = 7
+    BOUGHT_PLATE = 8
+    WASHING = 9
 
 class Ingredient:
     def __init__(self, name, order, index):
@@ -51,6 +53,24 @@ class Ingredient:
         if not isinstance(other, Ingredient):
             return NotImplemented
         return self.order.id < other.order.id
+
+
+
+# ===============================================
+# Plate
+# ===============================================
+class Plate:
+    def __init__(self):
+        self.claimed_by = None 
+        self.loc = None
+        self.shopItem = None
+
+    def is_free(self):
+        return self.claimed_by == None 
+    
+    def is_dirty(self):
+        print("self.shopItem is", self.shopItem)
+        return False
 
 
 # ===============================================
@@ -88,6 +108,8 @@ class Tasks(Enum):
     GOTO_PLATE = 5
     ACQUIRE_PLATE = 6
     SUBMIT_PLATE = 7
+    WASH_PLATE = 8
+    MOVE_PLATE_TO_COUNTER = 9
 
 class Task:
     def __init__(self, task, ingredient, metadata):
@@ -119,10 +141,7 @@ class Bot:
         self.botplayer = botplayer
         self.task = None
 
-    # Bot will procure a plate
-    # Decides whether to buy a plate or get a clean one
-    def select_plate(self):
-        pass
+
 
     # Bot chooses best location to chop food
     def select_chopping_counter(self):
@@ -168,7 +187,33 @@ class Bot:
                     self.task = None
                     # TODO: unclaim loc
         elif self.task.task == Tasks.ACQUIRE_PLATE:
-            return 
+            # TODO: change to be more functional
+            # buy a plate
+            dest = self.task.get_closest_loc(bot_loc)
+            arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+
+            if arrived and controller.get_team_money(team=controller.get_team()) >= ShopCosts.PLATE.buy_cost:
+                # only buy if we have money
+                if controller.buy(self.id, ShopCosts.PLATE, dest[0], dest[1]):
+                    self.task.ingredient.status = IngredientStatus.BOUGHT_PLATE
+                    self.task = None
+
+                    # make new plate and give it to the order
+                    plate = Plate()
+                    self.task.ingredient.order.plate = plate
+                    self.botplayer.plates.append(plate)
+        elif self.task.task == Tasks.WASH_PLATE:
+            dest = self.task.get_closest_loc(bot_loc)
+            arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+
+            if arrived:
+                # start washing the plate
+                if controller.wash_sink(self.id, dest[0], dest[1]):
+                    self.task.ingredient.status = IngredientStatus.WASHING
+                    self.task = None 
+
+                    # give the plate to the order
+
         elif self.task.task == Tasks.GOTO_PLATE:
             dest = self.task.metadata
             arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
@@ -418,6 +463,26 @@ class BotPlayer:
         ingredients.sort()
         return ingredients
     
+    # Bot will procure a plate
+    # Decides whether to buy a plate or get a clean one
+    # Returns true if there is a free plate assigned to the order, else FF we need to do work
+    def get_plate_task(self, ingredient):
+        if ingredient.order.plate != None:
+            return Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)
+
+        for plate in self.plates:
+            if plate.is_free() and not plate.is_dirty():
+                # TODO: we can optimize which plate we assign theoretically
+                ingredient.order.plate = plate 
+                plate.order = ingredient.order
+                return Task(Tasks.GOTO_PLATE, ingredient, plate)  
+
+        for plate in self.plates:
+            if plate.is_dirty():
+                return Task(Tasks.WASH_PLATE, ingredient, self.nav_maps["Sink"])
+
+        return Task(Tasks.ACQUIRE_PLATE, ingredient, self.nav_maps["Shop"])
+
     # generate the task list by the priority given from prioritize_ingredients
     def generate_tasks(self, controller, ingredient_list):
         task_list = []
@@ -447,32 +512,22 @@ class BotPlayer:
                     task_list.append((priority, Task(Tasks.COOK, ingredient, self.nav_maps["Cooker"])))
                 else:
                     # put it on a plate
-                    if ingredient.order.plate != None:
-                        task_list.append((priority, Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)))
-                    else:
-                        # the order has no assigned plate yet
-                        task_list.append((priority, Task(Tasks.ACQUIRE_PLATE, ingredient, self.plates)))
+                    task_list.append((priority, self.get_plate_task(ingredient)))
             elif ingredient.status == IngredientStatus.CHOPPED:
                 if ingredient.cookable:
                     task_list.append((priority, Task(Tasks.COOK, ingredient, self.cookers)))
                 else:
                     # put it on a plate
-                    if ingredient.order.plate != None:
-                        task_list.append((priority, Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)))
-                    else:
-                        # the order has no assigned plate yet
-                        task_list.append((priority, Task(Tasks.ACQUIRE_PLATE, ingredient, self.plates)))
+                    task_list.append((priority, self.get_plate_task(ingredient)))
             elif ingredient.status == IngredientStatus.COOKING:
                 # if controller.item_to_public_dict(ingredient.item)["cooked_stage"] == 1:
                 # check if by the time you walk there it will be cooked
                     continue
+            elif ingredient.status == IngredientStatus.BOUGHT_PLATE:
+                task_list.append((priority, Task(Tasks.MOVE_PLATE_TO_COUNTER, ingredient, None)))
             elif ingredient.status == IngredientStatus.COOKED:
                 # put it on a plate
-                if ingredient.order.plate != None:
-                    task_list.append((priority, Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)))
-                else:
-                    # the order has no assigned plate yet
-                    task_list.append((priority, Task(Tasks.ACQUIRE_PLATE, ingredient, self.plates)))
+                task_list.append((priority, self.get_plate_task(ingredient)))
             
 
         return task_list
@@ -517,178 +572,3 @@ class BotPlayer:
 
             # all bots do what they're assigned to do
             bot.work(controller)
-
-    
-        # self.my_bot_id = my_bots[0]
-        # bot_id = self.my_bot_id
-        
-        # bot_info = controller.get_bot_state(bot_id)
-        # bx, by = bot_info['x'], bot_info['y']
-
-        # if self.assembly_counter is None:
-        #     self.assembly_counter = self.find_nearest_tile(controller, bx, by, "COUNTER")
-        # if self.cooker_loc is None:
-        #     self.cooker_loc = self.find_nearest_tile(controller, bx, by, "COOKER")
-
-        # if not self.assembly_counter or not self.cooker_loc: return
-
-        # cx, cy = self.assembly_counter
-        # kx, ky = self.cooker_loc
-
-        # if self.state in [2, 8, 10] and bot_info.get('holding'):
-        #     self.state = 16
-
-        # #state 0: init + checking the pan
-        # if self.state == 0:
-        #     tile = controller.get_tile(controller.get_team(), kx, ky)
-        #     if tile and isinstance(tile.item, Pan):
-        #         self.state = 2
-        #     else:
-        #         self.state = 1
-
-        # #state 1: buy pan
-        # elif self.state == 1:
-        #     holding = bot_info.get('holding')
-        #     if holding: # assume it's the pan
-        #         if self.move_towards(controller, bot_id, kx, ky):
-        #             if controller.place(bot_id, kx, ky):
-        #                 self.state = 2
-        #     else:
-        #         shop_pos = self.find_nearest_tile(controller, bx, by, "SHOP")
-        #         if not shop_pos: return
-        #         sx, sy = shop_pos
-        #         if self.move_towards(controller, bot_id, sx, sy):
-        #             if controller.get_team_money(team=controller.get_team()) >= ShopCosts.PAN.buy_cost:
-        #                 controller.buy(bot_id, ShopCosts.PAN, sx, sy)
-
-        # #state 2: buy meat
-        # elif self.state == 2:
-        #     shop_pos = self.find_nearest_tile(controller, bx, by, "SHOP")
-        #     sx, sy = shop_pos
-        #     if self.move_towards(controller, bot_id, sx, sy):
-        #         if controller.get_team_money(team=controller.get_team()) >= FoodType.MEAT.buy_cost:
-        #             if controller.buy(bot_id, FoodType.MEAT, sx, sy):
-        #                 self.state = 3
-
-        # #state 3: put meat on counter
-        # elif self.state == 3:
-        #     if self.move_towards(controller, bot_id, cx, cy):
-        #         if controller.place(bot_id, cx, cy):
-        #             self.state = 4
-
-        # #state 4: chop meat
-        # elif self.state == 4:
-        #     if self.move_towards(controller, bot_id, cx, cy):
-        #         if controller.chop(bot_id, cx, cy):
-        #             self.state = 5
-
-        # #state 5: pickup meat
-        # elif self.state == 5:
-        #     if self.move_towards(controller, bot_id, cx, cy):
-        #         if controller.pickup(bot_id, cx, cy):
-        #             self.state = 6
-
-        # #state 6: put meat on counter
-        # elif self.state == 6:
-        #     if self.move_towards(controller, bot_id, kx, ky):
-        #         # Using the NEW logic where place() starts cooking automatically
-        #         if controller.place(bot_id, kx, ky):
-        #             self.state = 8 # Skip state 7
-
-        # #state 7: start the cook, but is cooking so we just go
-        # elif self.state == 7:
-        #     self.state = 8
-
-        # #state 8: buy the plate
-        # elif self.state == 8:
-        #     shop_pos = self.find_nearest_tile(controller, bx, by, "SHOP")
-        #     sx, sy = shop_pos
-        #     if self.move_towards(controller, bot_id, sx, sy):
-        #         if controller.get_team_money(team=controller.get_team()) >= ShopCosts.PLATE.buy_cost:
-        #             if controller.buy(bot_id, ShopCosts.PLATE, sx, sy):
-        #                 self.state = 9
-
-        # #state 9: put the plate on the counter
-        # elif self.state == 9:
-        #     if self.move_towards(controller, bot_id, cx, cy):
-        #         if controller.place(bot_id, cx, cy):
-        #             self.state = 10
-
-        # #state 10: buy noodle
-        # elif self.state == 10:
-        #     shop_pos = self.find_nearest_tile(controller, bx, by, "SHOP")
-        #     sx, sy = shop_pos
-        #     if self.move_towards(controller, bot_id, sx, sy):
-        #         if controller.get_team_money(team=controller.get_team()) >= FoodType.NOODLES.buy_cost:
-        #             if controller.buy(bot_id, FoodType.NOODLES, sx, sy):
-        #                 self.state = 11
-
-        # #state 11: add noodles to plate
-        # elif self.state == 11:
-        #     if self.move_towards(controller, bot_id, cx, cy):
-        #         if controller.add_food_to_plate(bot_id, cx, cy):
-        #             self.state = 12
-
-        # #state 12: wait and take meat
-        # elif self.state == 12:
-        #     if self.move_towards(controller, bot_id, kx, ky):
-        #         tile = controller.get_tile(controller.get_team(), kx, ky)
-        #         if tile and isinstance(tile.item, Pan) and tile.item.food:
-        #             food = tile.item.food
-        #             if food.cooked_stage == 1:
-        #                 if controller.take_from_pan(bot_id, kx, ky):
-        #                     self.state = 13
-        #             elif food.cooked_stage == 2:
-
-        #                 #trash
-        #                 if controller.take_from_pan(bot_id, kx, ky):
-        #                     self.state = 16 
-        #         else:
-        #             if bot_info.get('holding'):
-        #                 #trash
-        #                 self.state = 16
-        #             else:
-        #                 #restart
-        #                 self.state = 2 
-
-        # #state 13: add meat to plate
-        # elif self.state == 13:
-        #     if self.move_towards(controller, bot_id, cx, cy):
-        #         if controller.add_food_to_plate(bot_id, cx, cy):
-        #             self.state = 14
-
-        # #state 14: pick up the plate
-        # elif self.state == 14:
-        #     if self.move_towards(controller, bot_id, cx, cy):
-        #         if controller.pickup(bot_id, cx, cy):
-        #             self.state = 15
-
-        # #state 15: submit
-        # elif self.state == 15:
-        #     submit_pos = self.find_nearest_tile(controller, bx, by, "SUBMIT")
-        #     ux, uy = submit_pos
-        #     if self.move_towards(controller, bot_id, ux, uy):
-        #         if controller.submit(bot_id, ux, uy):
-        #             self.state = 0
-
-        # #state 16: trash
-        # elif self.state == 16:
-        #     trash_pos = self.find_nearest_tile(controller, bx, by, "TRASH")
-        #     if not trash_pos: return
-        #     tx, ty = trash_pos
-        #     if self.move_towards(controller, bot_id, tx, ty):
-        #         if controller.trash(bot_id, tx, ty):
-        #             self.state = 2 #restart
-        # for i in range(1, len(my_bots)):
-        #     self.my_bot_id = my_bots[i]
-        #     bot_id = self.my_bot_id
-            
-        #     bot_info = controller.get_bot_state(bot_id)
-        #     bx, by = bot_info['x'], bot_info['y']
-
-        #     dx = random.choice([-1, 1])
-        #     dy = random.choice([-1, 1])
-        #     nx,ny = bx + dx, by + dy
-        #     if controller.get_map(controller.get_team()).is_tile_walkable(nx, ny):
-        #         controller.move(bot_id, dx, dy)
-        #         return
