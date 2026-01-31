@@ -69,8 +69,7 @@ class Order:
 # ===============================================
 
 class Tasks(Enum):
-    GOTO_SHOP = 1
-    BUY = 2
+    BUY_INGREDIENT = 1
     GOTO_COUNTER = 3
     GOTO_COOKER = 4
     GOTO_PLATE = 5
@@ -82,6 +81,10 @@ class Task:
         self.ingredient = ingredient
         self.metadata = metadata 
 
+    def get_closest_loc(self, bot_loc):
+        return self.metadata[0]
+
+
     def __str__(self):
         return f"{self.task} for {self.ingredient.name} with {self.metadata}"
     
@@ -92,13 +95,28 @@ class Task:
 # Bot
 # ===============================================
 class Bot:
-    def __init__(self, bot_id):
+    def __init__(self, bot_id, botplayer):
         self.id = bot_id 
+        self.botplayer = botplayer
         self.task = None
 
+    def work(self, controller : RobotController):
+        bot_state = controller.get_bot_state(self.id)
+        bot_loc = (bot_state["x"], bot_state["y"])
 
-    def work(self):
-        print("not implemented: bot should start laboring")
+        if self.task is None:
+            return 
+        elif self.task.task == Tasks.BUY_INGREDIENT:
+            dest = self.task.get_closest_loc(bot_loc)
+            arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+
+            if arrived and controller.get_team_money(team=controller.get_team()) >= self.task.ingredient.cost:
+                # only buy if we have money
+                controller.buy(self.id, self.task.metadata, dest[0], dest[1])
+
+                
+        else:
+            raise(NotImplemented)
 
 
     def __str__(self):
@@ -126,7 +144,7 @@ class BotPlayer:
         self.orders = {}
         self.bots = {}
 
-        self.shops = []
+        self.shops = [(0,0)]
         self.parsed_map = False
 
     def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate) -> Optional[Tuple[int, int]]:
@@ -231,15 +249,15 @@ class BotPlayer:
         ingredients.sort()
         return ingredients
     
-    def generate_tasks(self, ingredient_list):
+    def generate_tasks(self, controller, ingredient_list):
         task_list = []
         for (priority, ingredient) in ingredient_list:
             # generate the next task for the ingredient
             if ingredient.status == IngredientStatus.NOT_STARTED:
-                # buy 
-                task_list.append((priority, Task(Tasks.GOTO_SHOP, ingredient, self.shops)))
-            elif ingredient.tatus == IngredientStatus.AT_SHOP:
-                task_list.append((priority, Task(Tasks.BUY, ingredient, ingredient.name)))
+                # buy only if we have enough money
+                # TODO: do some handling for when bots are on their way to the shop!
+                if controller.get_team_money(team=controller.get_team()) >= ingredient.cost:
+                    task_list.append((priority, Task(Tasks.BUY_INGREDIENT, ingredient, self.shops)))
             elif ingredient.status == IngredientStatus.BOUGHT:
                 # case on the ingredient
                 if ingredient.choppable:
@@ -280,11 +298,11 @@ class BotPlayer:
         # update bots
         for bot_id in my_bots:
             if bot_id not in self.bots:
-                self.bots[bot_id] = Bot(bot_id)
+                self.bots[bot_id] = Bot(bot_id, self)
 
         # based on orders, get ingredients in order of priority of what needs to be done
         ingredient_list = self.prioritize_ingredients(controller)
-        task_list = self.generate_tasks(ingredient_list)
+        task_list = self.generate_tasks(controller, ingredient_list)
 
         print(f"task list is {task_list}")
         
@@ -296,7 +314,7 @@ class BotPlayer:
                 self.assign_bot(bot, task_list)
 
             # all bots do what they're assigned to do
-            bot.work()
+            bot.work(controller)
 
     
         # self.my_bot_id = my_bots[0]
