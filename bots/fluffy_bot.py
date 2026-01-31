@@ -119,6 +119,17 @@ class Bot:
         self.botplayer = botplayer
         self.task = None
 
+    # Bot will procure a plate
+    # Decides whether to buy a plate or get a clean one
+    def select_plate(self):
+        pass
+
+    # Bot chooses best location to chop food
+    def select_chopping_counter(self):
+        pass
+
+    def
+
     def work(self, controller : RobotController):
         bot_state = controller.get_bot_state(self.id)
         bot_loc = (bot_state["x"], bot_state["y"])
@@ -192,6 +203,10 @@ class BotPlayer:
         self.parsed_map = False
 
         self.plates = []
+
+    # Inspects orders list and assigns a raw and cooked staging area
+    def assign_staging(self):
+        pass
 
     def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate) -> Optional[Tuple[int, int]]:
         queue = deque([(start, [])]) 
