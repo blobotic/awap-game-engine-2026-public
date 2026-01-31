@@ -1,11 +1,14 @@
 import random
 from collections import deque
+import collections
 from typing import Tuple, Optional, List
 
 from game_constants import Team, TileType, FoodType, ShopCosts
 from robot_controller import RobotController
 from item import Pan, Plate, Food
 from enum import Enum
+from tiles import *
+
 
 # ===============================================
 # Ingredients
@@ -65,6 +68,11 @@ class Order:
 
         self.active = False
 
+    def all_plated(self):
+        for ingredient in self.ings:
+            if ingredient.status != IngredientStatus.PLATED:
+                return False
+        return True 
 
 
 # ===============================================
@@ -77,6 +85,7 @@ class Tasks(Enum):
     COOK = 3
     GOTO_PLATE = 5
     ACQUIRE_PLATE = 6
+    SUBMIT_PLATE = 7
 
 class Task:
     def __init__(self, task, ingredient, metadata):
@@ -172,7 +181,6 @@ class BotPlayer:
         self.orders = {}
         self.bots = {}
 
-        self.shops = [(0,0)]
         self.parsed_map = False
 
     def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate) -> Optional[Tuple[int, int]]:
@@ -226,10 +234,116 @@ class BotPlayer:
 
 
     # my functions below
-    def parse_map(self, map):
-        parse_map = True
-        print("map is", map)
+    def parse_map(self, m) -> None:
+        """
+        Analyzes the map to generate flow fields for all relevant points of interest.
+        Populates self.nav_maps where self.nav_maps[category] contains:
+           - 'dists': 2D array of integers (distance to target)
+           - 'moves': 2D array of (dx, dy) tuples (direction to move to get closer)
+        """
+        self.parsed_map = True
+        print(f"[{self.state}] Parsing map flow fields...")
+        self.nav_maps = {}
 
+        # 1. Identify all relevant target locations by category
+        relevant_categories = collections.defaultdict(list)
+
+        width = m.width
+        height = m.height
+
+        for x in range(width):
+            for y in range(height):
+                tile = m.tiles[x][y]
+
+                # Group generic stations
+                if isinstance(tile, Counter):
+                    relevant_categories["Counter"].append((x, y))
+                elif isinstance(tile, Sink):
+                    relevant_categories["Sink"].append((x, y))
+                elif isinstance(tile, SinkTable):
+                    relevant_categories["SinkTable"].append((x, y))
+                elif isinstance(tile, Cooker):
+                    relevant_categories["Cooker"].append((x, y))
+                elif isinstance(tile, Submit):
+                    relevant_categories["Submit"].append((x, y))
+                elif isinstance(tile, Trash):
+                    relevant_categories["Trash"].append((x, y))
+                elif isinstance(tile, Shop):
+                    relevant_categories["Shop"].append((x, y))
+                elif isinstance(tile, Box):
+                    relevant_categories["Box"].append((x, y))
+
+        # 2. Generate Flow Field (BFS) for each category
+        for category, targets in relevant_categories.items():
+            if not targets:
+                continue
+
+            # Initialize grids
+            dist_matrix = [[float('inf') for _ in range(height)] for _ in range(width)]
+            move_matrix = [[None for _ in range(height)] for _ in range(width)]
+
+            queue = deque()
+
+            # Seed the BFS with all target locations (distance 0)
+            for (tx, ty) in targets:
+                dist_matrix[tx][ty] = 0
+                move_matrix[tx][ty] = (0, 0)
+                queue.append((tx, ty))
+
+            while queue:
+                curr_x, curr_y = queue.popleft()
+                current_dist = dist_matrix[curr_x][curr_y]
+
+                # Check all 8 neighbors
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0: continue
+
+                        nx, ny = curr_x + dx, curr_y + dy
+
+                        if 0 <= nx < width and 0 <= ny < height:
+                            if dist_matrix[nx][ny] == float('inf'):
+                                neighbor_tile = m.tiles[nx][ny]
+                                tile_name = getattr(neighbor_tile, "tile_name", "")
+
+                                if tile_name == "FLOOR":
+                                    dist_matrix[nx][ny] = current_dist + 1
+                                    move_matrix[nx][ny] = (curr_x - nx, curr_y - ny)
+                                    queue.append((nx, ny))
+
+            self.nav_maps[category] = {
+                "dists": dist_matrix,
+                "moves": move_matrix,
+                "targets": targets
+            }
+
+        self.parsed_map = True
+
+        # --- OUTPUT RESULTS ---
+        print("\n=== MAP PARSING COMPLETE ===")
+        print(f"Categories found: {list(self.nav_maps.keys())}")
+
+        # Iterate through ALL categories to print them
+        for category, data in self.nav_maps.items():
+            print(f"\nDistance Map for '{category}' (Visualized):")
+            dms = data["dists"]
+
+            # Print transposed (y is rows)
+            for y in range(height-1, -1, -1):
+                row_str = ""
+                for x in range(width):
+                    val = dms[x][y]
+                    if val == float('inf'):
+                        row_str += " . "
+                    elif val == 0:
+                        # Grab first letter for tag, e.g., C for Counter
+
+                        tag = category[0].upper()
+                        row_str += f"[{tag}]"
+                    else:
+                        row_str += f"{val:2} "
+                print(row_str)
+        print("============================\n")
 
     def calculate_cost(self, ingredient_list):
         cost = 0
@@ -279,19 +393,30 @@ class BotPlayer:
     
     def generate_tasks(self, controller, ingredient_list):
         task_list = []
+
+        # TODO: generate tasks for buying plates/pans and 
+        # moving them if not generated yet
+
+        # try to generate the next task for submitting orders
+        for order_id in self.orders:
+            order = self.orders[order_id]
+
+            if order.all_plated():
+                task_list.append((priority, Task(Tasks.SUBMIT_PLATE)))
+
+        # try to generate the next task for all the ingredients
         for (priority, ingredient) in ingredient_list:
-            # generate the next task for the ingredient
             if ingredient.status == IngredientStatus.NOT_STARTED:
                 # buy only if we have enough money
                 # TODO: do some handling for when bots are on their way to the shop!
                 if controller.get_team_money(team=controller.get_team()) >= ingredient.cost:
-                    task_list.append((priority, Task(Tasks.BUY_INGREDIENT, ingredient, self.shops)))
+                    task_list.append((priority, Task(Tasks.BUY_INGREDIENT, ingredient, self.nav_maps["Shop"])))
             elif ingredient.status == IngredientStatus.BOUGHT:
                 # case on the ingredient
                 if ingredient.choppable:
-                    task_list.append((priority, Task(Tasks.CHOP, ingredient, self.counters)))
+                    task_list.append((priority, Task(Tasks.CHOP, ingredient, self.nav_maps["Counter"])))
                 elif ingredient.cookable: 
-                    task_list.append((priority, Task(Tasks.COOK, ingredient, self.cookers)))
+                    task_list.append((priority, Task(Tasks.COOK, ingredient, self.nav_maps["Cooker"])))
                 else:
                     # put it on a plate
                     if ingredient.order.plate != None:
@@ -320,7 +445,7 @@ class BotPlayer:
                 else:
                     # the order has no assigned plate yet
                     task_list.append((priority, Task(Tasks.ACQUIRE_PLATE), ingredient, self.plates))
-            # etc
+            
 
         return task_list
 
