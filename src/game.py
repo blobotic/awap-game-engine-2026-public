@@ -203,6 +203,8 @@ class Game:
             return None
 
         for _ in range(self.turn_limit):
+            import time 
+            time.sleep(1)
             #start turn (money + environment + expirations)
             self.game_state.start_turn()
 

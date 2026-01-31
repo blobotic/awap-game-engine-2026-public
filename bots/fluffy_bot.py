@@ -14,11 +14,11 @@ from tiles import *
 # Ingredients
 # ===============================================
 
-ingredient_data = {"EGG": {"id": 0, "choppable": False, "cookable": True, "cost": 20},
-                   "ONION": {"id": 1, "choppable": True, "cookable": False, "cost": 30},
-                   "MEAT": {"id": 2, "choppable": True, "cookable": True, "cost": 80},
-                   "NOODLES": {"id": 3, "choppable": False, "cookable": False, "cost": 40},
-                   "SAUCE": {"id": 4, "choppable": False, "cookable": False, "cost": 10}}
+ingredient_data = {"EGG": {"id": 0, "choppable": False, "cookable": True, "cost": 20, "shopItem": FoodType.EGG},
+                   "ONION": {"id": 1, "choppable": True, "cookable": False, "cost": 30, "shopItem": FoodType.ONIONS},
+                   "MEAT": {"id": 2, "choppable": True, "cookable": True, "cost": 80, "shopItem": FoodType.MEAT},
+                   "NOODLES": {"id": 3, "choppable": False, "cookable": False, "cost": 40, "shopItem": FoodType.NOODLES},
+                   "SAUCE": {"id": 4, "choppable": False, "cookable": False, "cost": 10, "shopItem": FoodType.SAUCE}}
 
 class IngredientStatus(Enum):
     NOT_STARTED = 1
@@ -37,6 +37,7 @@ class Ingredient:
         self.choppable = ingredient_data[name]["choppable"]
         self.cookable = ingredient_data[name]["cookable"]
         self.cost = ingredient_data[name]["cost"]
+        self.shopItem = ingredient_data[name]["shopItem"]
         
         self.status = IngredientStatus.NOT_STARTED
         self.order = order
@@ -67,6 +68,7 @@ class Order:
             i += 1
 
         self.active = False
+        self.plate = None
 
     def all_plated(self):
         for ingredient in self.ings:
@@ -94,16 +96,16 @@ class Task:
         self.metadata = metadata 
 
     def get_closest_loc(self, bot_loc):
-        # TODO: implement
-        return self.metadata[0]
+        return self.metadata["dists"][bot_loc[0]][bot_loc[1]][0][1]
     
-    def get_closest_loc(self, bot_loc):
+    def get_closest_unclaimed_loc(self, bot_loc):
         # TODO: implement
-        return self.metadata[0]
+        return self.metadata["dists"][bot_loc[0]][bot_loc[1]][0][1]
 
 
     def __str__(self):
-        return f"{self.task} for {self.ingredient.name} with {self.metadata}"
+        metadata_format = f"{self.metadata}"
+        return f"{self.task} for {self.ingredient.name} with {metadata_format:.20}"
     
     def __repr__(self):
         return self.__str__()
@@ -129,8 +131,11 @@ class Bot:
 
             if arrived and controller.get_team_money(team=controller.get_team()) >= self.task.ingredient.cost:
                 # only buy if we have money
-                if controller.buy(self.id, self.task.metadata, dest[0], dest[1]):
+                print("Self.task is", self.task)
+                if controller.buy(self.id, self.task.ingredient.shopItem, dest[0], dest[1]):
+                    print("ingredient status set to bought!!")
                     self.task.ingredient.status = IngredientStatus.BOUGHT
+                    self.task = None
         elif self.task.task == Tasks.CHOP:
             dest = self.task.get_closest_unclaimed_loc(bot_loc)
             # TODO: claim loc
@@ -140,6 +145,7 @@ class Bot:
                 # start chopping 
                 if controller.chop(self.id, dest[0], dest[1]):
                     self.task.ingredient.status = IngredientStatus.CHOPPED
+                    self.task = None
                     # TODO: unclaim loc
         elif self.task.task == Tasks.COOK:
             dest = self.task.get_closest_unclaimed_loc(bot_loc)
@@ -150,9 +156,11 @@ class Bot:
                 # start chopping 
                 if controller.start_cook(self.id, dest[0], dest[1]):
                     self.task.ingredient.status = IngredientStatus.COOKING
+                    self.task = None
                     # TODO: unclaim loc
                 
         else:
+            print("self.task.task is ", self.task.task)
             raise(NotImplemented)
 
 
@@ -182,6 +190,8 @@ class BotPlayer:
         self.bots = {}
 
         self.parsed_map = False
+
+        self.plates = []
 
     def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate) -> Optional[Tuple[int, int]]:
         queue = deque([(start, [])]) 
@@ -238,7 +248,7 @@ class BotPlayer:
         """
         Analyzes the map to generate flow fields for all relevant points of interest.
         Populates self.nav_maps where self.nav_maps[category] contains:
-           - 'dists': 2D array of integers (distance to target)
+           - 'dists': 2D array of sorted lists of (distance, (target_x, target_y)) tuples
            - 'moves': 2D array of (dx, dy) tuples (direction to move to get closer)
         """
         self.parsed_map = True
@@ -278,72 +288,65 @@ class BotPlayer:
             if not targets:
                 continue
 
-            # Initialize grids
-            dist_matrix = [[float('inf') for _ in range(height)] for _ in range(width)]
-            move_matrix = [[None for _ in range(height)] for _ in range(width)]
+            # Initialize grids - dists is now a 2D array of lists
+            dist_matrix = [[[] for _ in range(height)] for _ in range(width)]
+            move_matrix = [[{} for _ in range(height)] for _ in range(width)]  # Dictionary keyed by target
 
-            queue = deque()
+            # Run BFS from each target separately
+            for target_idx, (tx, ty) in enumerate(targets):
+                temp_dist = [[float('inf') for _ in range(height)] for _ in range(width)]
+                queue = deque()
 
-            # Seed the BFS with all target locations (distance 0)
-            for (tx, ty) in targets:
-                dist_matrix[tx][ty] = 0
-                move_matrix[tx][ty] = (0, 0)
+                # Seed BFS for this specific target
+                temp_dist[tx][ty] = 0
+                move_matrix[tx][ty][(tx, ty)] = (0, 0)
                 queue.append((tx, ty))
 
-            while queue:
-                curr_x, curr_y = queue.popleft()
-                current_dist = dist_matrix[curr_x][curr_y]
+                while queue:
+                    curr_x, curr_y = queue.popleft()
+                    current_dist = temp_dist[curr_x][curr_y]
 
-                # Check all 8 neighbors
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        if dx == 0 and dy == 0: continue
+                    # Check all 8 neighbors
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx == 0 and dy == 0: continue
 
-                        nx, ny = curr_x + dx, curr_y + dy
+                            nx, ny = curr_x + dx, curr_y + dy
 
-                        if 0 <= nx < width and 0 <= ny < height:
-                            if dist_matrix[nx][ny] == float('inf'):
-                                neighbor_tile = m.tiles[nx][ny]
-                                tile_name = getattr(neighbor_tile, "tile_name", "")
+                            if 0 <= nx < width and 0 <= ny < height:
+                                if temp_dist[nx][ny] == float('inf'):
+                                    neighbor_tile = m.tiles[nx][ny]
+                                    tile_name = getattr(neighbor_tile, "tile_name", "")
 
-                                if tile_name == "FLOOR":
-                                    dist_matrix[nx][ny] = current_dist + 1
-                                    move_matrix[nx][ny] = (curr_x - nx, curr_y - ny)
-                                    queue.append((nx, ny))
+                                    if tile_name == "FLOOR":
+                                        temp_dist[nx][ny] = current_dist + 1
+                                        move_matrix[nx][ny][(tx, ty)] = (curr_x - nx, curr_y - ny)
+                                        queue.append((nx, ny))
+
+                # Add distance to this target to all reachable cells
+                for x in range(width):
+                    for y in range(height):
+                        if temp_dist[x][y] != float('inf'):
+                            dist_matrix[x][y].append((temp_dist[x][y], (tx, ty)))
+
+            # Sort each list by distance
+            for x in range(width):
+                for y in range(height):
+                    dist_matrix[x][y].sort(key=lambda item: item[0])
+
+            # Convert move_matrix to use the closest target by default
+            simple_move_matrix = [[None for _ in range(height)] for _ in range(width)]
+            for x in range(width):
+                for y in range(height):
+                    if dist_matrix[x][y]:
+                        closest_target = dist_matrix[x][y][0][1]
+                        simple_move_matrix[x][y] = move_matrix[x][y].get(closest_target)
 
             self.nav_maps[category] = {
                 "dists": dist_matrix,
-                "moves": move_matrix,
+                "moves": simple_move_matrix,
                 "targets": targets
             }
-
-        self.parsed_map = True
-
-        # --- OUTPUT RESULTS ---
-        print("\n=== MAP PARSING COMPLETE ===")
-        print(f"Categories found: {list(self.nav_maps.keys())}")
-
-        # Iterate through ALL categories to print them
-        for category, data in self.nav_maps.items():
-            print(f"\nDistance Map for '{category}' (Visualized):")
-            dms = data["dists"]
-
-            # Print transposed (y is rows)
-            for y in range(height-1, -1, -1):
-                row_str = ""
-                for x in range(width):
-                    val = dms[x][y]
-                    if val == float('inf'):
-                        row_str += " . "
-                    elif val == 0:
-                        # Grab first letter for tag, e.g., C for Counter
-
-                        tag = category[0].upper()
-                        row_str += f"[{tag}]"
-                    else:
-                        row_str += f"{val:2} "
-                print(row_str)
-        print("============================\n")
 
     def calculate_cost(self, ingredient_list):
         cost = 0
@@ -423,7 +426,7 @@ class BotPlayer:
                         task_list.append((priority, Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)))
                     else:
                         # the order has no assigned plate yet
-                        task_list.append((priority, Task(Tasks.ACQUIRE_PLATE), ingredient, self.plates))
+                        task_list.append((priority, Task(Tasks.ACQUIRE_PLATE, ingredient, self.plates)))
             elif ingredient.status == IngredientStatus.CHOPPED:
                 if ingredient.cookable:
                     task_list.append((priority, Task(Tasks.COOK, ingredient, self.cookers)))
@@ -433,7 +436,7 @@ class BotPlayer:
                         task_list.append((priority, Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)))
                     else:
                         # the order has no assigned plate yet
-                        task_list.append((priority, Task(Tasks.ACQUIRE_PLATE), ingredient, self.plates))
+                        task_list.append((priority, Task(Tasks.ACQUIRE_PLATE, ingredient, self.plates)))
             elif ingredient.status == IngredientStatus.COOKING:
                 # if controller.item_to_public_dict(ingredient.item)["cooked_stage"] == 1:
                 # check if by the time you walk there it will be cooked
@@ -444,7 +447,7 @@ class BotPlayer:
                     task_list.append((priority, Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)))
                 else:
                     # the order has no assigned plate yet
-                    task_list.append((priority, Task(Tasks.ACQUIRE_PLATE), ingredient, self.plates))
+                    task_list.append((priority, Task(Tasks.ACQUIRE_PLATE, ingredient, self.plates)))
             
 
         return task_list
@@ -481,7 +484,7 @@ class BotPlayer:
         print(f"task list is {task_list}")
         
         # assign idle bots to do ingredients / tasks
-        print("self.bots is", self.bots)
+        print("    self.bots is", self.bots)
         for bot_id in self.bots:
             bot = self.bots[bot_id]
             if bot.task is None:
