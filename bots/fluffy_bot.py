@@ -84,6 +84,9 @@ class Task:
 
     def __str__(self):
         return f"{self.task} for {self.ingredient.name} with {self.metadata}"
+    
+    def __repr__(self):
+        return self.__str__()
 
 # ===============================================
 # Bot
@@ -98,6 +101,11 @@ class Bot:
         print("not implemented: bot should start laboring")
 
 
+    def __str__(self):
+        return f"Bot {self.id} - doing {self.task}"
+    
+    def __repr__(self):
+        return self.__str__()
 
 
 
