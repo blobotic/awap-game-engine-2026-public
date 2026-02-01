@@ -43,6 +43,9 @@ class Ingredient:
         
         self.status = IngredientStatus.NOT_STARTED
         self.order = order
+        self.preplate_status = IngredientStatus.NOT_STARTED
+        self.working = None # which bot is working on this ingredient currently
+        self.loc = None
 
     def __eq__(self, other):
         if not isinstance(other, Ingredient):
@@ -64,6 +67,7 @@ class Plate:
         self.claimed_by = None 
         self.loc = None
         self.shopItem = None
+        
 
     def is_free(self):
         return self.claimed_by == None 
@@ -78,9 +82,10 @@ class Plate:
 # ===============================================
 
 class Order:
-    def __init__(self, order):
+    def __init__(self, order, botplayer):
         self.id = order["order_id"] 
         self.ings = []
+        self.botplayer = botplayer
 
         i = 0
         for ing in order["required"]:
@@ -89,6 +94,7 @@ class Order:
 
         self.active = False
         self.plate = None
+        self.submitting = False
 
     def all_plated(self):
         for ingredient in self.ings:
@@ -105,7 +111,7 @@ class Tasks(Enum):
     BUY_INGREDIENT = 1
     CHOP = 2
     COOK = 3
-    GOTO_PLATE = 5
+    PLATE = 5
     ACQUIRE_PLATE = 6
     SUBMIT_PLATE = 7
     WASH_PLATE = 8
@@ -122,8 +128,11 @@ class Task:
     
     def get_closest_unclaimed_loc(self, bot_loc):
         # TODO: implement
-        return self.metadata["dists"][bot_loc[0]][bot_loc[1]][0][1]
-
+        for el in self.metadata["dists"][bot_loc[0]][bot_loc[1]]:
+            print("el[1] is", el[1])
+            if el[1] not in self.ingredient.order.botplayer.used_counters:
+                return el[1]
+        return (-1, -1)
 
     def __str__(self):
         metadata_format = f"{self.metadata}"
@@ -141,7 +150,10 @@ class Bot:
         self.botplayer = botplayer
         self.task = None
 
-
+    def holding(self, controller):
+        bot_state = controller.get_bot_state(self.id)
+        print("bot_state is", bot_state)
+        return bot_state["holding"]
 
     # Bot chooses best location to chop food
     def select_chopping_counter(self):
@@ -162,7 +174,9 @@ class Bot:
                 print("Self.task is", self.task)
                 if controller.buy(self.id, self.task.ingredient.shopItem, dest[0], dest[1]):
                     print("ingredient status set to bought!!")
+                    self.task.ingredient.item = controller.get_bot_state(self.id)["holding"]
                     self.task.ingredient.status = IngredientStatus.BOUGHT
+                    self.task.ingredient.working = None
                     self.task = None
         elif self.task.task == Tasks.CHOP:
             dest = self.task.get_closest_unclaimed_loc(bot_loc)
@@ -170,20 +184,48 @@ class Bot:
             arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
 
             if arrived:
+                # first try to put it down
+                if self.holding(controller):
+                    controller.place(self.id, dest[0], dest[1])
                 # start chopping 
-                if controller.chop(self.id, dest[0], dest[1]):
+                elif controller.chop(self.id, dest[0], dest[1]):
+                    print("chopping!!!")
                     self.task.ingredient.status = IngredientStatus.CHOPPED
+                    self.task.ingredient.loc = (dest[0], dest[1])
+                    self.task.ingredient.working = None
                     self.task = None
                     # TODO: unclaim loc
         elif self.task.task == Tasks.COOK:
+            # cooker loc
             dest = self.task.get_closest_unclaimed_loc(bot_loc)
+
+            # first try to pick up the ingredient
+            cooker_tile = controller.get_tile(controller.get_team(), dest[0], dest[1])
+            cooker_has_food = cooker_tile and hasattr(cooker_tile, "item") and cooker_tile.item is not None and cooker_tile.item.food is not None
+            print("cooker tile is", cooker_tile.item)
+            print("cooker tile is", cooker_tile.item.food)
+            if not cooker_has_food and not self.holding(controller):
+                # go to the ingredient
+                ing_dest = self.task.ingredient.loc
+                arrived = self.botplayer.move_towards(controller, self.id, ing_dest[0], ing_dest[1])
+                if not arrived:
+                    return 
+                # then try to pick the ingredient up 
+                if controller.pickup(self.id, ing_dest[0], ing_dest[1]):
+                    return
+                else:
+                    raise "Ingredient location is not good"
+
+            # then try to go to the cooker
             # TODO: claim loc
             arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
 
             if arrived:
-                # start chopping 
+                # start cooking 
                 if controller.start_cook(self.id, dest[0], dest[1]):
                     self.task.ingredient.status = IngredientStatus.COOKING
+                    self.task.ingredient.loc = (dest[0], dest[1])
+                    self.task.ingredient.working = None
                     self.task = None
                     # TODO: unclaim loc
         elif self.task.task == Tasks.ACQUIRE_PLATE:
@@ -193,15 +235,18 @@ class Bot:
             arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
 
             if arrived and controller.get_team_money(team=controller.get_team()) >= ShopCosts.PLATE.buy_cost:
+                print("trying to buy plate!!!")
                 # only buy if we have money
                 if controller.buy(self.id, ShopCosts.PLATE, dest[0], dest[1]):
-                    self.task.ingredient.status = IngredientStatus.BOUGHT_PLATE
-                    self.task = None
-
+                    print("bought plate!")
                     # make new plate and give it to the order
                     plate = Plate()
                     self.task.ingredient.order.plate = plate
                     self.botplayer.plates.append(plate)
+
+                    self.task.ingredient.status = IngredientStatus.BOUGHT_PLATE
+                    self.task.ingredient.working = None
+                    self.task = None
         elif self.task.task == Tasks.WASH_PLATE:
             dest = self.task.get_closest_loc(bot_loc)
             arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
@@ -210,19 +255,77 @@ class Bot:
                 # start washing the plate
                 if controller.wash_sink(self.id, dest[0], dest[1]):
                     self.task.ingredient.status = IngredientStatus.WASHING
+                    self.task.ingredient.working = None
                     self.task = None 
 
                     # give the plate to the order
 
-        elif self.task.task == Tasks.GOTO_PLATE:
-            dest = self.task.metadata
+        elif self.task.task == Tasks.MOVE_PLATE_TO_COUNTER:
+            dest = self.task.get_closest_unclaimed_loc(bot_loc)
+            print("MOVE_PLATE_TO_COUNTER dest is ", dest)
+            arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+
+            if arrived:
+                # place on counter
+                if controller.place(self.id, dest[0], dest[1]):
+                    self.task.ingredient.status = self.task.ingredient.preplate_status
+                    self.task.ingredient.order.plate.loc = (dest[0], dest[1])
+                    self.botplayer.used_counters[(dest[0], dest[1])] = True
+                    self.task.ingredient.working = None
+                    self.task = None
+
+        elif self.task.task == Tasks.PLATE:
+            # metadata dictates if we need to pick something up
+            if self.task.metadata != None and not self.holding(controller):
+                # go to location
+                dest = self.task.metadata
+                arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+                if not arrived:
+                    return
+                meta_tile = controller.get_tile(controller.get_team(), dest[0], dest[1])
+                is_pan = hasattr(meta_tile, "item") and isinstance(meta_tile.item, Pan)
+                print("meta_tile is", meta_tile, "and meta_tile.item is", meta_tile.item)
+                if is_pan and controller.take_from_pan(self.id, dest[0], dest[1]):
+                    print("took from pan!")
+                    return 
+                if controller.pickup(self.id, dest[0], dest[1]):
+                    return 
+                else:
+                    raise Exception(f"Plate metadata {self.task.metadata} should be a valid location")
+
+            # move to plate
+            dest = self.task.ingredient.order.plate.loc
             arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
 
             if arrived:
                 # place on plate 
                 controller.add_food_to_plate(self.id, dest[0], dest[1])
                 self.task.ingredient.status = IngredientStatus.PLATED
+                self.task.ingredient.working = None
+                self.task = None
+        elif self.task.task == Tasks.SUBMIT_PLATE:
+            self.task.ingredient.order.submitting = True
 
+            if not self.holding(controller):
+                # go to plate
+                dest = self.task.ingredient.order.plate.loc 
+                arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+                if not arrived:
+                    return 
+                
+                # pick up plate
+                controller.pickup(self.id, dest[0], dest[1])
+                return
+
+            # go to submit
+            dest = self.task.get_closest_loc(bot_loc)
+            arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
+            if not arrived:
+                return
+
+            # submit
+            controller.submit(self.id, dest[0], dest[1])
+            self.task = None
         else:
             print("self.task.task is ", self.task.task)
             raise(NotImplemented)
@@ -256,15 +359,26 @@ class BotPlayer:
         self.parsed_map = False
 
         self.plates = []
+        self.used_counters = {}
 
     # Inspects orders list and assigns a raw and cooked staging area
     def assign_staging(self):
         pass
 
-    def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate) -> Optional[Tuple[int, int]]:
+    def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate, bot_id: int = None) -> Optional[Tuple[int, int]]:
         queue = deque([(start, [])]) 
         visited = set([start])
         w, h = self.map.width, self.map.height
+        
+        # Get positions of all other bots to avoid collisions
+        occupied_positions = set()
+        if bot_id is not None:
+            my_bots = controller.get_team_bot_ids(team=controller.get_team())
+            for other_bot_id in my_bots:
+                if other_bot_id != bot_id:
+                    other_bot_state = controller.get_bot_state(other_bot_id)
+                    if other_bot_state:
+                        occupied_positions.add((other_bot_state['x'], other_bot_state['y']))
 
         while queue:
             (curr_x, curr_y), path = queue.popleft()
@@ -278,7 +392,8 @@ class BotPlayer:
                     if dx == 0 and dy == 0: continue
                     nx, ny = curr_x + dx, curr_y + dy
                     if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
-                        if controller.get_map(controller.get_team()).is_tile_walkable(nx, ny):
+                        # Check if tile is walkable AND not occupied by another bot
+                        if controller.get_map(team=controller.get_team()).is_tile_walkable(nx, ny) and (nx, ny) not in occupied_positions:
                             visited.add((nx, ny))
                             queue.append(((nx, ny), path + [(dx, dy)]))
         return None
@@ -289,11 +404,13 @@ class BotPlayer:
         def is_adjacent_to_target(x, y, tile):
             return max(abs(x - target_x), abs(y - target_y)) <= 1
         if is_adjacent_to_target(bx, by, None): return True
-        step = self.get_bfs_path(controller, (bx, by), is_adjacent_to_target)
+        
+        # Pass bot_id to get_bfs_path so it can avoid other bots
+        step = self.get_bfs_path(controller, (bx, by), is_adjacent_to_target, bot_id)
         if step and (step[0] != 0 or step[1] != 0):
             controller.move(bot_id, step[0], step[1])
             return False 
-        return False 
+        return False
 
     def find_nearest_tile(self, controller: RobotController, bot_x: int, bot_y: int, tile_name: str) -> Optional[Tuple[int, int]]:
         best_dist = 9999
@@ -386,9 +503,9 @@ class BotPlayer:
                                     neighbor_tile = m.tiles[nx][ny]
                                     tile_name = getattr(neighbor_tile, "tile_name", "")
 
+                                    temp_dist[nx][ny] = current_dist + 1
+                                    move_matrix[nx][ny][(tx, ty)] = (curr_x - nx, curr_y - ny)
                                     if tile_name == "FLOOR":
-                                        temp_dist[nx][ny] = current_dist + 1
-                                        move_matrix[nx][ny][(tx, ty)] = (curr_x - nx, curr_y - ny)
                                         queue.append((nx, ny))
 
                 # Add distance to this target to all reachable cells
@@ -438,7 +555,7 @@ class BotPlayer:
         
             oid = order["order_id"]
             if oid not in self.orders:
-                self.orders[oid] = Order(order)
+                self.orders[oid] = Order(order, self)
             elif self.orders[oid].active:
                 # we care more about orders that we already started
                 priority += 10
@@ -467,15 +584,16 @@ class BotPlayer:
     # Decides whether to buy a plate or get a clean one
     # Returns true if there is a free plate assigned to the order, else FF we need to do work
     def get_plate_task(self, ingredient):
+        ingredient.preplate_status = ingredient.status
         if ingredient.order.plate != None:
-            return Task(Tasks.GOTO_PLATE, ingredient, ingredient.order.plate)
+            return Task(Tasks.PLATE, ingredient, None)
 
         for plate in self.plates:
             if plate.is_free() and not plate.is_dirty():
                 # TODO: we can optimize which plate we assign theoretically
                 ingredient.order.plate = plate 
                 plate.order = ingredient.order
-                return Task(Tasks.GOTO_PLATE, ingredient, plate)  
+                return Task(Tasks.PLATE, ingredient, plate)  
 
         for plate in self.plates:
             if plate.is_dirty():
@@ -494,15 +612,24 @@ class BotPlayer:
         for order_id in self.orders:
             order = self.orders[order_id]
 
-            if order.all_plated():
-                task_list.append((priority, Task(Tasks.SUBMIT_PLATE)))
+            if order.all_plated() and not order.submitting:
+                task_list.append((10000, Task(Tasks.SUBMIT_PLATE, order.ings[0], self.nav_maps["Submit"])))
+
+        making_plates = {}
 
         # try to generate the next task for all the ingredients
         for (priority, ingredient) in ingredient_list:
+            if ingredient.working != None:
+                continue    
             if ingredient.status == IngredientStatus.NOT_STARTED:
                 # buy only if we have enough money
                 # TODO: do some handling for when bots are on their way to the shop!
-                if controller.get_team_money(team=controller.get_team()) >= ingredient.cost:
+                # if we can't give the order a plate, first try to get a plate
+                plate_task = self.get_plate_task(ingredient)
+                if plate_task.task != Tasks.PLATE and ingredient.order.id not in making_plates:
+                    task_list.append((priority, plate_task))
+                    making_plates[order.id] = True
+                elif controller.get_team_money(team=controller.get_team()) >= ingredient.cost:
                     task_list.append((priority, Task(Tasks.BUY_INGREDIENT, ingredient, self.nav_maps["Shop"])))
             elif ingredient.status == IngredientStatus.BOUGHT:
                 # case on the ingredient
@@ -515,19 +642,26 @@ class BotPlayer:
                     task_list.append((priority, self.get_plate_task(ingredient)))
             elif ingredient.status == IngredientStatus.CHOPPED:
                 if ingredient.cookable:
-                    task_list.append((priority, Task(Tasks.COOK, ingredient, self.cookers)))
+                    task_list.append((priority, Task(Tasks.COOK, ingredient, self.nav_maps["Cooker"])))
                 else:
                     # put it on a plate
                     task_list.append((priority, self.get_plate_task(ingredient)))
             elif ingredient.status == IngredientStatus.COOKING:
-                # if controller.item_to_public_dict(ingredient.item)["cooked_stage"] == 1:
                 # check if by the time you walk there it will be cooked
-                    continue
+                cooker_tile = controller.get_tile(controller.get_team(), ingredient.loc[0], ingredient.loc[1])
+                if cooker_tile.item.food.cooked_stage == 1:
+                    task_list.append((priority, Task(Tasks.PLATE, ingredient, ingredient.loc)))
             elif ingredient.status == IngredientStatus.BOUGHT_PLATE:
-                task_list.append((priority, Task(Tasks.MOVE_PLATE_TO_COUNTER, ingredient, None)))
+                task_list.append((priority, Task(Tasks.MOVE_PLATE_TO_COUNTER, ingredient, self.nav_maps["Counter"])))
             elif ingredient.status == IngredientStatus.COOKED:
                 # put it on a plate
                 task_list.append((priority, self.get_plate_task(ingredient)))
+            elif ingredient.status == IngredientStatus.PLATED:
+                # this ingredient is done!!
+                continue
+            else:
+                print("ingredients.status is ", ingredient.status)
+                raise(NotImplemented)
             
 
         return task_list
@@ -564,11 +698,13 @@ class BotPlayer:
         print(f"task list is {task_list}")
         
         # assign idle bots to do ingredients / tasks
-        print("    self.bots is", self.bots)
+        print("            self.bots is", self.bots)
         for bot_id in self.bots:
             bot = self.bots[bot_id]
             if bot.task is None:
                 self.assign_bot(bot, task_list)
+                if bot.task is not None:
+                    bot.task.ingredient.working = bot
 
             # all bots do what they're assigned to do
             bot.work(controller)
