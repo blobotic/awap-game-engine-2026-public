@@ -13,7 +13,7 @@ from tiles import *
 # ===============================================
 
 ingredient_data = {"EGG": {"id": 0, "choppable": False, "cookable": True, "cost": 20, "shopItem": FoodType.EGG},
-                   "ONION": {"id": 1, "choppable": True, "cookable": False, "cost": 30, "shopItem": FoodType.ONIONS},
+                   "ONIONS": {"id": 1, "choppable": True, "cookable": False, "cost": 30, "shopItem": FoodType.ONIONS},
                    "MEAT": {"id": 2, "choppable": True, "cookable": True, "cost": 80, "shopItem": FoodType.MEAT},
                    "NOODLES": {"id": 3, "choppable": False, "cookable": False, "cost": 40, "shopItem": FoodType.NOODLES},
                    "SAUCE": {"id": 4, "choppable": False, "cookable": False, "cost": 10, "shopItem": FoodType.SAUCE}}
@@ -105,30 +105,37 @@ class Task:
         self.bot_id = bot_id
 
     def get_closest_loc(self, bot_loc):
-        """Get closest target location from nav_maps metadata."""
+        """Get closest target location using Chebyshev distance."""
         if not self.metadata:
             return None
-        dists = self.metadata.get("dists")
-        if not dists:
+        targets = self.metadata.get("targets")
+        if not targets:
             return None
-        cell = dists[bot_loc[0]][bot_loc[1]]
-        if not cell:
-            return None
-        return cell[0][1]  # (distance, (x, y)) -> (x, y)
+
+        # Find closest target by Chebyshev distance
+        best_dist = float('inf')
+        best_target = None
+        for (x, y) in targets:
+            dist = max(abs(bot_loc[0] - x), abs(bot_loc[1] - y))
+            if dist < best_dist:
+                best_dist = dist
+                best_target = (x, y)
+
+        return best_target
 
     def get_closest_unclaimed_loc(self, bot_loc, controller):
         """Get closest target location that doesn't have an item on it."""
         if not self.metadata:
             return None
-        dists = self.metadata.get("dists")
-        if not dists:
-            return None
-        cell = dists[bot_loc[0]][bot_loc[1]]
-        if not cell:
+        targets = self.metadata.get("targets")
+        if not targets:
             return None
 
-        # Iterate through sorted locations and find first unoccupied one
-        for dist, (x, y) in cell:
+        # Sort targets by Chebyshev distance
+        sorted_targets = sorted(targets, key=lambda t: max(abs(bot_loc[0] - t[0]), abs(bot_loc[1] - t[1])))
+
+        # Find first unoccupied one
+        for (x, y) in sorted_targets:
             tile = controller.get_tile(controller.get_team(), x, y)
             tile_item = getattr(tile, "item", None)
 
@@ -137,13 +144,12 @@ class Task:
                 return (x, y)
 
             # For Cooker: item is always a Pan, check if pan is empty (no food in it)
-            # Pan has an 'item' attribute for the food being cooked
             pan_contents = getattr(tile_item, "item", None)
             if pan_contents is None:
                 return (x, y)
 
         # All locations occupied, return closest anyway (will fail but retry later)
-        return cell[0][1]
+        return sorted_targets[0] if sorted_targets else None
 
     def __str__(self):
         ing_name = self.ingredient.name if self.ingredient else "N/A"
@@ -184,8 +190,10 @@ class Bot:
 
             if holding:
                 # Phase 1: We're holding the ingredient, need to place it on counter
+                # Only use Counter (not Box) since we need to chop on it
                 dest = self.task.get_closest_unclaimed_loc(bot_loc, controller)
                 if dest is None:
+                    # All counters occupied - could wait or trash something
                     return
                 arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
                 if arrived:
@@ -253,10 +261,11 @@ class Bot:
                 # else: still cooking, wait
 
         elif self.task.task == Tasks.STAGE:
-            # Place ingredient on counter for assembly
+            # Place ingredient on counter or box for assembly
             ing = self.task.ingredient
-            dest = self.task.get_closest_unclaimed_loc(bot_loc, controller)
+            dest = self.botplayer.find_closest_empty_placeable(bot_loc, controller)
             if dest is None:
+                # No empty placeable tiles - could wait or use other strategies
                 return
             arrived = self.botplayer.move_towards(controller, self.id, dest[0], dest[1])
             if arrived:
@@ -384,17 +393,24 @@ class BotPlayer:
 
             self.orders[oid] = Order(game_order)
 
-    def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate) -> Optional[Tuple[int, int]]:
-        queue = deque([(start, [])]) 
+    def get_bfs_path(self, controller: RobotController, start: Tuple[int, int], target_predicate, bot_id: int = None) -> Optional[Tuple[int, int]]:
+        queue = deque([(start, [])])
         visited = set([start])
         w, h = self.map.width, self.map.height
+
+        # Get positions of all other bots to avoid collisions
+        occupied = set()
+        for bid in controller.get_team_bot_ids(controller.get_team()):
+            if bid != bot_id:  # Don't block on ourselves
+                state = controller.get_bot_state(bid)
+                occupied.add((state["x"], state["y"]))
 
         while queue:
             (curr_x, curr_y), path = queue.popleft()
             tile = controller.get_tile(controller.get_team(), curr_x, curr_y)
             if target_predicate(curr_x, curr_y, tile):
-                if not path: return (0, 0) 
-                return path[0] 
+                if not path: return (0, 0)
+                return path[0]
 
             for dx in [0, -1, 1]:
                 for dy in [0, -1, 1]:
@@ -402,8 +418,10 @@ class BotPlayer:
                     nx, ny = curr_x + dx, curr_y + dy
                     if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
                         if controller.get_map(controller.get_team()).is_tile_walkable(nx, ny):
-                            visited.add((nx, ny))
-                            queue.append(((nx, ny), path + [(dx, dy)]))
+                            # Avoid tiles occupied by other bots
+                            if (nx, ny) not in occupied:
+                                visited.add((nx, ny))
+                                queue.append(((nx, ny), path + [(dx, dy)]))
         return None
 
     def move_towards(self, controller: RobotController, bot_id: int, target_x: int, target_y: int) -> bool:
@@ -412,35 +430,61 @@ class BotPlayer:
         def is_adjacent_to_target(x, y, tile):
             return max(abs(x - target_x), abs(y - target_y)) <= 1
         if is_adjacent_to_target(bx, by, None): return True
-        step = self.get_bfs_path(controller, (bx, by), is_adjacent_to_target)
+        step = self.get_bfs_path(controller, (bx, by), is_adjacent_to_target, bot_id)
         if step and (step[0] != 0 or step[1] != 0):
             controller.move(bot_id, step[0], step[1])
-            return False 
+            return False
         return False 
+
+    # ===== Helpers =====
+
+    def find_closest_empty_placeable(self, bot_loc, controller):
+        """Find closest empty Counter or Box tile for placing items."""
+        candidates = []
+
+        for category in ["Counter", "Box"]:
+            nav = self.nav_maps.get(category)
+            if not nav:
+                continue
+            targets = nav.get("targets", [])
+
+            for (x, y) in targets:
+                tile = controller.get_tile(controller.get_team(), x, y)
+                tile_item = getattr(tile, "item", None)
+                dist = max(abs(bot_loc[0] - x), abs(bot_loc[1] - y))
+
+                if tile_item is None:
+                    # Empty Counter or Box
+                    candidates.append((dist, (x, y)))
+                elif category == "Box":
+                    # Box with count 0 is also empty
+                    if getattr(tile, "count", 0) == 0:
+                        candidates.append((dist, (x, y)))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            return candidates[0][1]
+        return None
 
     # ===== Map Parsing =====
     def parse_map(self, m) -> None:
         """
-        Analyzes the map to generate flow fields for all relevant points of interest.
-        Populates self.nav_maps where self.nav_maps[category] contains:
-           - 'dists': 2D array of sorted lists of (distance, (target_x, target_y)) tuples
-           - 'moves': 2D array of (dx, dy) tuples (direction to move to get closer)
+        Analyzes the map to find all relevant tile locations by category.
+        Uses a fast single-pass scan instead of multiple BFS traversals.
         """
         self.parsed_map = True
-        print("Parsing map flow fields...")
         self.nav_maps = {}
-
-        # 1. Identify all relevant target locations by category
-        relevant_categories = collections.defaultdict(list)
 
         width = m.width
         height = m.height
+
+        # Single pass: identify all relevant target locations by category
+        relevant_categories = collections.defaultdict(list)
 
         for x in range(width):
             for y in range(height):
                 tile = m.tiles[x][y]
 
-                # Group generic stations
                 if isinstance(tile, Counter):
                     relevant_categories["Counter"].append((x, y))
                 elif isinstance(tile, Sink):
@@ -458,68 +502,9 @@ class BotPlayer:
                 elif isinstance(tile, Box):
                     relevant_categories["Box"].append((x, y))
 
-        # 2. Generate Flow Field (BFS) for each category
+        # Store just the target locations - we'll compute distances on-demand
         for category, targets in relevant_categories.items():
-            if not targets:
-                continue
-
-            # Initialize grids - dists is now a 2D array of lists
-            dist_matrix = [[[] for _ in range(height)] for _ in range(width)]
-            move_matrix = [[{} for _ in range(height)] for _ in range(width)]  # Dictionary keyed by target
-
-            # Run BFS from each target separately
-            for target_idx, (tx, ty) in enumerate(targets):
-                temp_dist = [[float('inf') for _ in range(height)] for _ in range(width)]
-                queue = deque()
-
-                # Seed BFS for this specific target
-                temp_dist[tx][ty] = 0
-                move_matrix[tx][ty][(tx, ty)] = (0, 0)
-                queue.append((tx, ty))
-
-                while queue:
-                    curr_x, curr_y = queue.popleft()
-                    current_dist = temp_dist[curr_x][curr_y]
-
-                    # Check all 8 neighbors
-                    for dx in [-1, 0, 1]:
-                        for dy in [-1, 0, 1]:
-                            if dx == 0 and dy == 0: continue
-
-                            nx, ny = curr_x + dx, curr_y + dy
-
-                            if 0 <= nx < width and 0 <= ny < height:
-                                if temp_dist[nx][ny] == float('inf'):
-                                    # Use is_tile_walkable to include Submit and other walkable tiles
-                                    if m.is_tile_walkable(nx, ny):
-                                        temp_dist[nx][ny] = current_dist + 1
-                                        move_matrix[nx][ny][(tx, ty)] = (curr_x - nx, curr_y - ny)
-                                        queue.append((nx, ny))
-
-                # Add distance to this target to all reachable cells
-                for x in range(width):
-                    for y in range(height):
-                        if temp_dist[x][y] != float('inf'):
-                            dist_matrix[x][y].append((temp_dist[x][y], (tx, ty)))
-
-            # Sort each list by distance
-            for x in range(width):
-                for y in range(height):
-                    dist_matrix[x][y].sort(key=lambda item: item[0])
-
-            # Convert move_matrix to use the closest target by default
-            simple_move_matrix = [[None for _ in range(height)] for _ in range(width)]
-            for x in range(width):
-                for y in range(height):
-                    if dist_matrix[x][y]:
-                        closest_target = dist_matrix[x][y][0][1]
-                        simple_move_matrix[x][y] = move_matrix[x][y].get(closest_target)
-
-            self.nav_maps[category] = {
-                "dists": dist_matrix,
-                "moves": simple_move_matrix,
-                "targets": targets
-            }
+            self.nav_maps[category] = {"targets": targets}
 
     # ===== Task Generation =====
 
