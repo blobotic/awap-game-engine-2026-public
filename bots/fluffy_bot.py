@@ -17,7 +17,7 @@ from tiles import *
 # ===============================================
 
 ingredient_data = {"EGG": {"id": 0, "choppable": False, "cookable": True, "cost": 20, "shopItem": FoodType.EGG},
-                   "ONION": {"id": 1, "choppable": True, "cookable": False, "cost": 30, "shopItem": FoodType.ONIONS},
+                   "ONIONS": {"id": 1, "choppable": True, "cookable": False, "cost": 30, "shopItem": FoodType.ONIONS},
                    "MEAT": {"id": 2, "choppable": True, "cookable": True, "cost": 80, "shopItem": FoodType.MEAT},
                    "NOODLES": {"id": 3, "choppable": False, "cookable": False, "cost": 40, "shopItem": FoodType.NOODLES},
                    "SAUCE": {"id": 4, "choppable": False, "cookable": False, "cost": 10, "shopItem": FoodType.SAUCE}}
@@ -30,6 +30,8 @@ class IngredientStatus(Enum):
     COOKING = 5
     COOKED = 6
     PLATED = 7
+    BOUGHT_PLATE = 8
+    WASHING = 9
 
 class Ingredient:
     def __init__(self, name, order, index):
@@ -113,59 +115,6 @@ class Order:
                 return False
         return True 
 
-@dataclass
-class OrderQueue:
-    capacity: int
-    active: Dict[int, Order] = field(default_factory=dict)
-
-    # Used as a prio function for orders
-    # Todo make this useful
-    def _score(self, order, turn):
-        return 1
-
-    def refresh(self, rc):
-        turn = rc.get_turn()
-        orders = rc.get_orders()
-        order_ids = {o["order_id"]: o for o in orders if o["is_active"]}
-
-        # Update active orders dict
-        for oid, order in list(self.active.items()):
-            o = order_ids.get(oid)
-            if o is None:
-                order.abandoned = True
-                del self.active[oid]
-                continue
-            if o.get("completed_turn") is not None:
-                order.completed = True
-                del self.active[oid]
-                continue
-            if turn > o.get("expires_turn", 0):
-                order.abandoned = True
-                del self.active[oid]
-                continue
-            order.reward = o["reward"]
-            order.expires_turn = o["expires_turn"]
-
-        if len(self.active) >= self.capacity:
-            return
-        to_add = self.capacity - len(self.active)
-        # New orders to work on
-        candidates = []
-        for o in orders:
-            if not o.get("is_active"):
-                continue
-            if o.get("completed_turn") is not None:
-                continue
-            oid = o["order_id"]
-            if oid in self.active:
-                continue
-            if turn > o.get("expires_turn", 0):
-                continue
-            candidates.append(o)
-
-        candidates.sort(key=lambda o: self._score(o, turn), reverse=True)
-
-        # Todo create order objects for candidates, add them to active orders
 # ===============================================
 # Tasks
 # ===============================================
@@ -179,14 +128,14 @@ class Tasks(Enum):
     SUBMIT_PLATE = 7
     ASSEMBLE = 8
     WASH_PLATE = 9
+    MOVE_PLATE_TO_COUNTER = 10
 
 class Task:
-    def __init__(self, task, ingredient, metadata, order, bot_id):
+    def __init__(self, task, ingredient, metadata):
         self.task = task
         self.ingredient = ingredient
         self.metadata = metadata
-        self.order = order
-        self.bot_id = bot_id
+        self.order = ingredient.order
         self.target_x = -1
         self.target_y = -1
 
@@ -416,8 +365,6 @@ class BotPlayer:
         self.assembly_counter = None 
         self.cooker_loc = None
         self.my_bot_id = None
-
-        self.order_queue = OrderQueue(capacity=3)
         
         self.state = 0
 
@@ -637,7 +584,7 @@ class BotPlayer:
             # for now, we will just prioritize by how many turns are left
             turn = controller.get_turn()
             remaining_turns = order["expires_turn"] - turn
-            priority += 1000 / remaining_turns
+            priority += 1000 / (remaining_turns + 1)
 
             # todo: modify priority by distance to bots
 
@@ -758,22 +705,6 @@ class BotPlayer:
         my_bots = controller.get_team_bot_ids(controller.get_team())
         if not my_bots: return
 
-        # Refresh the order queue
-        self.order_queue.refresh(controller)
-        active_orders = self.order_queue.list_active()
-        if not active_orders:
-            return
-
-        # Bot task assignment loop, heavy pseudocode for now
-        for bot in my_bots:
-            if bot.task is None:
-                # in next task function, wherever it is
-                # Loop through its ingredients, and do the next possible task:
-                # Buy, chop, cook, plate, submit etc
-                bot.task = next_task()
-                done = bot.work(controller)
-                if done:
-                    bot.task = None
 
         # parse map
         if not self.parsed_map:
